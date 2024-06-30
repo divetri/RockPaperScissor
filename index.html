@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SSE Example</title>
+</head>
+<body>
+    <h1>Server-Sent Events Example</h1>
+    <div id="events"></div>
+    <button onclick="sendSuit()">Choice</button>
+    <script>
+        const roomId = prompt("Enter Room ID:");
+        let player;
+        let source;
+        function setPlayer(message){
+            if(message.includes("Player")){
+                player = message.split(",").find(x=> x.includes("Player")).split(" ")[1]
+            }
+        }
+        function getRoom(){
+            if (roomId && typeof(EventSource) !== "undefined") {
+            source = new EventSource(`/rooms/${roomId}`);
+            source.onmessage = function(event) {
+                var eventList = document.getElementById("events");
+                var newElement = document.createElement("div");
+                newElement.innerHTML = event.data;
+                setPlayer(event.data);
+                eventList.appendChild(newElement);
+            };
+            } else {
+                document.getElementById("events").innerHTML = "Sorry, your browser does not support server-sent events or you did not provide a Room ID.";
+            }
+        }
+
+        function sendSuit(){
+            const suit = prompt("Enter suit: ");
+            fetch(`/rooms/a/${roomId}/${player}/${suit}`)
+            .then(r=>{
+                if(r.status===200){
+                    source.close()
+                    getRoom()
+                }
+            })
+        }
+        if(!source){
+            getRoom();
+        }
+        
+    </script>
+</body>
+</html>
