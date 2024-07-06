@@ -5,8 +5,9 @@
 </head>
 <body>
     <h1>Server-Sent Events Example</h1>
-    <div id="events"></div>
     <button onclick="sendSuit()">Choice</button>
+    <div id="events"></div>
+    
     <script>
         const roomId = prompt("Enter Room ID:");
         let player;
@@ -33,7 +34,7 @@
 
         function sendSuit(){
             const suit = prompt("Enter suit: ");
-            fetch(`/rooms/a/${roomId}/${player}/${suit}`)
+            fetch(`/rooms/play/${roomId}/${player}/${suit}`)
             .then(r=>{
                 if(r.status===200){
                     source.close()
