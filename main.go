@@ -4,29 +4,25 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 )
 
-type PlayerInfo struct {
-	Player int
-	//Suit   int // 1: rock 2: paper 3: scissor 0: idle
+type Player struct {
+	ID   int
+	Suit []int
 }
 
-type RoomInfo struct {
-	PlayerA *PlayerInfo
-	PlayerB *PlayerInfo
-	Choices []Choice
-}
-
-type Choice struct {
-	SuitA *int
-	SuitB *int
+type Room struct {
+	ID      string
+	Name    string
+	Players []Player
 }
 
 var (
-	rooms = make(map[string]*RoomInfo)
+	roomx = make(map[string]*Room)
 	mu    sync.Mutex
 )
 
@@ -49,62 +45,34 @@ func events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	roomID := pathParts[0]
-	//roomID := r.URL.Path[len("/rooms/"):]
-	// Check if the client count is less than 2
 	mu.Lock()
-	if _, exist := rooms[roomID]; !exist {
-		currentPlayer := &PlayerInfo{Player: 0}
-		rooms[roomID] = &RoomInfo{PlayerA: currentPlayer}
+
+	var currentPlayer *Player
+	if _, exist := roomx[roomID]; !exist {
+		player := Player{ID: 0, Suit: []int{}}
+		currentPlayer = &player
+		var room = Room{ID: roomID, Players: []Player{player}}
+
+		roomx[roomID] = &room
 		fmt.Printf("Player 1 connected")
-		//rooms[roomID] = &RoomInfo{Player: 0, Suit: -1}
-	}
-	if currentRoom, exist := rooms[roomID]; exist && currentRoom.PlayerA.Player > 0 {
-		currentPlayer := &PlayerInfo{Player: 1}
-		rooms[roomID].PlayerB = currentPlayer
-		fmt.Printf("Player 2 connected")
-		//rooms[roomID] = &RoomInfo{Player: 0, Suit: -1}
-	}
-
-	// if rooms[roomID].Player >= 2 {
-	// 	mu.Unlock()
-	// 	http.Error(w, "Too many clients connected", http.StatusTooManyRequests)
-	// 	return
-	// }
-
-	if currentRoom, exist := rooms[roomID]; exist && currentRoom.PlayerB.Player > 0 {
-		mu.Unlock()
-		http.Error(w, "Too many clients connected", http.StatusTooManyRequests)
-		return
+	} else {
+		currentRoom := roomx[roomID]
+		if len(currentRoom.Players) == 2 {
+			http.Error(w, "Too many clients connected", http.StatusTooManyRequests)
+			return
+		} else if len(currentRoom.Players) == 1 {
+			player := Player{ID: 1, Suit: []int{}}
+			currentPlayer = &player
+			roomx[roomID].Players = append(roomx[roomID].Players, player)
+			fmt.Printf("Player 2 connected")
+		}
 	}
 
-	// if rooms[roomID].PlayerA >= 2 {
-	// 	mu.Unlock()
-	// 	http.Error(w, "Too many clients connected", http.StatusTooManyRequests)
-	// 	return
-	// }
+	room := roomx[roomID]
 
-	//players[roomID].Player++ //increment disini
-	//playerID := players[roomID].Player
-	//suit := players[roomID].Suit
-
+	fmt.Printf("isi player %v", room.Players)
+	fmt.Printf("player %v", currentPlayer)
 	mu.Unlock()
-
-	// // Decrement the client count when the function returns
-	// defer func() {
-	// 	mu.Lock()
-	// 	players[roomID].Player--
-	// 	fmt.Printf("Client disconnected. Total clients: %d\n", players[roomID].Player)
-	// 	mu.Unlock()
-	// }()
-
-	// notify := r.Context().Done()
-	// go func() {
-	// 	<-notify
-	// 	mu.Lock()
-	// 	players[roomID].Player--
-	// 	fmt.Printf("Client disconnected. Total clients: %d\n", players[roomID].Player)
-	// 	mu.Unlock()
-	// }()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -114,26 +82,49 @@ func events(w http.ResponseWriter, r *http.Request) {
 	messages := make(chan string)
 
 	// Goroutine to send messages.
-	go func() {
+	go func(room *Room, player *Player) {
+		fmt.Printf("nganu %d", player.ID)
 		for {
 			// Send a message every second.
 			time.Sleep(1 * time.Second)
-			//messages <- fmt.Sprintf("data: The time is %s\n\n", time.Now().String())
-			if len(rooms[roomID].Choices) > 0 {
-				lastChoice := rooms[roomID].Choices[len(rooms[roomID].Choices)-1]
-				if *lastChoice.SuitA > 0 {
-					playerA := rooms[roomID].PlayerA
-					messages <- fmt.Sprintf("data: Player %d, Suit %d, Room %s, The time is %s\n\n", playerA, *lastChoice.SuitA, roomID, time.Now().String())
-				}
-				if *lastChoice.SuitB > 0 {
-					playerB := rooms[roomID].PlayerB
-					messages <- fmt.Sprintf("data: Player %d, Suit %d, Room %s, The time is %s\n\n", playerB, *lastChoice.SuitA, roomID, time.Now().String())
-				}
-			}
+			messages <- fmt.Sprintf("data: Player %d, Room %s, The time is %s\n\n", player.ID, roomID, time.Now().String())
+
+			// if len(room.Choices) > 0 {
+			// 	lastChoice := room.Choices[len(room.Choices)-1]
+			// 	if *lastChoice.SuitA > 0 {
+			// 		playerA := room.PlayerA
+			// 		messages <- fmt.Sprintf("data: Player %d, Suit %d, Room %s, The time is %s\n\n", playerA, *lastChoice.SuitA, roomID, time.Now().String())
+			// 	}
+			// 	if *lastChoice.SuitB > 0 {
+			// 		playerB := room.PlayerB
+			// 		messages <- fmt.Sprintf("data: Player %d, Suit %d, Room %s, The time is %s\n\n", playerB, *lastChoice.SuitA, roomID, time.Now().String())
+			// 	}
+			// }
 
 		}
-	}()
+	}(room, currentPlayer)
 
+	notify := r.Context().Done()
+	go func(room *Room, player *Player) {
+		fmt.Printf("nganu %d", player.ID)
+		<-notify
+		mu.Lock()
+		// filteredItems, err := Filter(roomx[room.ID].Players, func(item Player) bool {
+		// 	return item.ID != player.ID
+		// })
+		// if err{
+		// 	fmt.Printf("Error in disconnected player.")
+		// 	return
+		// }
+
+		roomx[room.ID].Players = slices.DeleteFunc(roomx[roomID].Players, func(n Player) bool {
+			return n.ID != player.ID
+		})
+		fmt.Printf("Client disconnected. Total clients: %d\n", len(roomx[room.ID].Players))
+		mu.Unlock()
+	}(room, currentPlayer)
+
+	fmt.Printf("140?")
 	// Write messages to the response.
 	for msg := range messages {
 		fmt.Fprintf(w, msg)
@@ -168,18 +159,18 @@ func suit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mu.Lock()
-	if _, exist := rooms[roomID]; !exist {
+	if _, exist := roomx[roomID]; !exist {
 		http.Error(w, "Invalid room", http.StatusBadRequest)
 	}
 	if suit > 0 && suit < 4 {
-		if rooms[roomID].PlayerA.Player == player {
-			rooms[roomID].Choices[len(rooms[roomID].Choices)-1].SuitA = &suit
-			fmt.Fprintf(w, "Player A received for room %d\n", suit)
-		}
-		if rooms[roomID].PlayerB.Player == player {
-			rooms[roomID].Choices[len(rooms[roomID].Choices)-1].SuitB = &suit
-			fmt.Fprintf(w, "Player B received for room %d\n", suit)
-		}
+		// if roomx[roomID].PlayerA.Player == player {
+		// 	roomx[roomID].Choices[len(roomx[roomID].Choices)-1].SuitA = &suit
+		// 	fmt.Fprintf(w, "Player A received for room %d\n", suit)
+		// }
+		// if rooms[roomID].PlayerB.Player == player {
+		// 	rooms[roomID].Choices[len(rooms[roomID].Choices)-1].SuitB = &suit
+		// 	fmt.Fprintf(w, "Player B received for room %d\n", suit)
+		// }
 	} else {
 		http.Error(w, "Invalid choice", http.StatusBadRequest)
 	}
