@@ -6,41 +6,113 @@
 <body>
     <h1>Server-Sent Events Example</h1>
     <div id="events"></div>
-    <button onclick="sendSuit()">Choice</button>
+    <button id="action">...</button>
     <script>
         const roomId = prompt("Enter Room ID:");
+        const actionButton = document.getElementById("action")
         let player;
         let source;
-        function setPlayer(message){
-            if(message.includes("Player")){
-                player = message.split(",").find(x=> x.includes("Player")).split(" ")[1]
-            }
+
+        function parseJSONAsync(jsonString) {
+            return new Promise((resolve, reject) => {
+                try {
+                const result = JSON.parse(jsonString);
+                resolve(result);
+                } catch (error) {
+                reject(error);
+                }
+            });
         }
         function getRoom(){
             if (roomId && typeof(EventSource) !== "undefined") {
             source = new EventSource(`/rooms/${roomId}`);
             source.onmessage = function(event) {
-                var eventList = document.getElementById("events");
-                var newElement = document.createElement("div");
-                newElement.innerHTML = event.data;
-                setPlayer(event.data);
-                eventList.appendChild(newElement);
+                
+                let eventList = document.getElementById("events");
+                let idElement = "sse:event-data"
+                let newElement = document.getElementById(idElement);
+                console.log({data: event.data})
+                parseJSONAsync(event.data)
+                .then(
+                    roomData => {
+                        if(roomData?.room?.state === 'Ready'){
+                            actionButton.onclick = () => sendSuit(roomData.player.id)
+                            actionButton.innerHTML = "Suit"
+                            actionButton.disabled = false
+                        } else if (roomData?.room?.state === 'WaitingSuit'){
+                            if(roomData?.room?.WaitingSuit.id === roomData.player.id){
+                                actionButton.onclick = () => sendSuit(roomData.player.id)
+                                actionButton.innerHTML = "Suit"
+                            } else {
+                                actionButton.onclick = () => {};
+                                actionButton.disabled = true;
+                                actionButton.innerHTML = "Waiting...";
+                            }
+                        } else if(
+                            roomData?.room?.state === 'ShowingResult' 
+                            || (roomData?.room?.state === 'Rematch'
+                                && roomData?.room?.WaitingSuit.id === roomData.player.id)){
+                            actionButton.onclick = () => sendRematch(roomData.player.id)
+                            actionButton.disabled = false;
+                            actionButton.innerHTML = "Rematch";
+                        }
+
+                        if(newElement){
+                            newElement.innerHTML = event.data;
+                        }else{
+                            newElement = document.createElement('div');
+                            newElement.id = idElement;
+                            eventList.appendChild(newElement);
+                        }
+                    }
+                ).catch(() => {})
             };
             } else {
                 document.getElementById("events").innerHTML = "Sorry, your browser does not support server-sent events or you did not provide a Room ID.";
             }
         }
 
-        function sendSuit(){
+        function sendSuit(playerID){
+            const prevText = actionButton.innerHTML;
+            actionButton.disabled = true;
+            actionButton.innerHTML = "Loading...";
             const suit = prompt("Enter suit: ");
-            fetch(`/rooms/a/${roomId}/${player}/${suit}`)
+            fetch(`/rooms/play/${roomId}/${playerID}/${suit}`)
             .then(r=>{
                 if(r.status===200){
-                    source.close()
-                    getRoom()
+                    actionButton.disabled = true;
+                    actionButton.innerHTML = "Waiting...";
+                    console.log(`Submission Success`)
+                    return 0;
                 }
+                throw Error("Failed submission");
+            })
+            .catch(()=>{
+                actionButton.disabled = false;
+                actionButton.innerHTML = prevText;
             })
         }
+
+        function sendRematch(playerID){
+            const prevText = actionButton.innerHTML;
+            actionButton.disabled = true;
+            actionButton.innerHTML = "Loading...";
+            fetch(`/rooms/rematch/${roomId}/${playerID}`)
+            .then(r=>{
+                if(r.status===200){
+                    actionButton.disabled = true;
+                    actionButton.innerHTML = "Waiting...";
+                    console.log(`Submission Success`)
+                    return 0;
+                }
+                throw Error("Failed submission");
+            })
+            .catch(()=>{
+                actionButton.disabled = false;
+                actionButton.innerHTML = prevText;
+            })
+        }
+        
         if(!source){
             getRoom();
         }

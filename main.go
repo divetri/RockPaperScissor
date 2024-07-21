@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -8,17 +9,259 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
+type SuitResult int
+
+const (
+	Draw SuitResult = iota
+	Win
+	Lose
+)
+
+func (s SuitResult) String() string {
+	return [...]string{"Draw", "Win", "Lose"}[s]
+}
+
+func (s SuitResult) Int() int {
+	return int(s)
+}
+
+func (s SuitResult) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.String())
+}
+
+type Suit int
+
+const (
+	Unknown Suit = iota // EnumIndex = 0
+	Rock                // EnumIndex = 1
+	Paper               // EnumIndex = 2
+	Scissor             // EnumIndex = 3
+)
+
+func (s Suit) String() string {
+	return [...]string{"Unknown", "Rock", "Paper", "Scissor"}[s]
+}
+
+func (s Suit) Int() int {
+	return int(s)
+}
+
+func (s Suit) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.String())
+}
+
+func (a Suit) Compare(b Suit) SuitResult {
+	if a == b {
+		return Draw
+	} else {
+		if a-b == 1 || a-b == -2 {
+			return Win
+		} else {
+			return Lose
+		}
+	}
+}
+
 type Player struct {
-	ID   int
-	Suit []int
+	ID   string `json:"id"`
+	Suit []Suit `json:"suit"`
+}
+
+type RoomState int
+
+const (
+	Idle            RoomState = iota // room created, has no player
+	WaitingOpponent                  // room created, one player
+	Ready                            // room created, two player, no one suited
+	WaitingSuit                      // room created, one player suited
+	ShowingResult                    // two player suited, waiting for new game
+	Rematch                          // go to idle but still saving result
+)
+
+func (s RoomState) String() string {
+	return [...]string{"Idle", "WaitingOpponent", "Ready", "WaitingSuit", "ShowingResult", "Rematch", "WaitingRematch"}[s]
+}
+
+func (s RoomState) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.String())
+}
+
+type RoomAction int
+
+const (
+	DoNothing RoomAction = iota // do nothing
+	Join                        // one player join
+	Quit                        // one player quit
+	Suiting                     // one player suiting
+	Rejoin                      // rematch join
+)
+
+func (r *Room) AddPlayer() Player {
+	if len(r.Players) < 2 {
+		p := Player{ID: uuid.NewString(), Suit: []Suit{}}
+		r.Players = append(r.Players, p)
+		r.Transition(Join)
+		return r.Players[len(r.Players)-1]
+	}
+	return r.Players[len(r.Players)-1]
+}
+
+func (r *Room) RejoinPlayerByID(ID string) {
+	if r.State == ShowingResult {
+		playerA, playerB := r.Players[0], r.Players[1]
+		if playerA.ID == ID {
+			r.WaitingSuit = &playerB
+		} else {
+			r.WaitingSuit = &playerA
+		}
+		r.Transition(Rejoin)
+	}
+	if r.State == Rematch {
+		if r.WaitingSuit != nil && r.WaitingSuit.ID == ID {
+			r.Transition(Rejoin)
+			r.WaitingSuit = nil
+		}
+	}
+}
+
+func (r *Room) GetPlayerIndexByID(ID string) int {
+	return slices.IndexFunc(r.Players, func(n Player) bool {
+		return n.ID == ID
+	})
+}
+
+func (r *Room) GetPlayerByID(ID string) *Player {
+	playerIndex := r.GetPlayerIndexByID(ID)
+	if playerIndex == -1 {
+		return nil
+	}
+	return &r.Players[playerIndex]
+}
+
+func (r *Room) QuitPlayerByID(ID string) {
+	r.Players = slices.DeleteFunc(r.Players, func(n Player) bool {
+		return n.ID == ID
+	})
+	if len(r.Players) == 1 {
+		r.Players[0].Suit = []Suit{}
+		r.Results = []RoomResult{}
+		r.WaitingSuit = nil
+	}
+	r.Transition(Quit)
+}
+
+func (r *Room) AddPlayerSuitByID(ID string, suit Suit) {
+	if r.State == Ready || r.State == WaitingSuit {
+		playerIndex := r.GetPlayerIndexByID(ID)
+		if playerIndex != -1 {
+			playerA, playerB := r.Players[0], r.Players[1]
+			r.Players[playerIndex].Suit = append(r.Players[playerIndex].Suit, suit)
+			r.Transition(Suiting)
+
+			if r.State == WaitingSuit {
+				if playerA.ID == r.Players[playerIndex].ID {
+					r.WaitingSuit = &playerB
+				} else {
+					r.WaitingSuit = &playerA
+				}
+			}
+
+			if r.State == ShowingResult {
+				r.WaitingSuit = nil
+				playerA, playerB := r.Players[0], r.Players[1]
+				lastSuitA, lastSuitB := playerA.Suit[len(playerA.Suit)-1], playerB.Suit[len(playerB.Suit)-1]
+				suitResult := lastSuitA.Compare(lastSuitB)
+				if suitResult == Win {
+					r.Results = append(r.Results, RoomResult{
+						ID: &playerA.ID,
+					})
+				}
+				if suitResult == Lose {
+					r.Results = append(r.Results, RoomResult{
+
+						ID: &playerB.ID,
+					})
+				}
+				if suitResult == Draw {
+					r.Results = append(r.Results, RoomResult{
+						ID: nil,
+					})
+				}
+			}
+		}
+	}
+
+}
+
+func (r *Room) Transition(a RoomAction) *Room {
+	s := r.State
+	if s == Idle && a == Join {
+		r.State = WaitingOpponent
+		return r
+	}
+	if s == WaitingOpponent && a == Quit {
+		r.State = Idle
+		return r
+	}
+	if s == WaitingOpponent && a == Join {
+		r.State = Ready
+		return r
+	}
+	if s == Ready && a == Quit {
+		r.State = WaitingOpponent
+		return r
+	}
+	if s == Ready && a == Suiting {
+		r.State = WaitingSuit
+		return r
+	}
+	if s == WaitingSuit && a == Quit {
+		r.State = WaitingOpponent
+		return r
+	}
+	if s == WaitingSuit && a == Suiting && r.WaitingSuit != nil {
+		r.State = ShowingResult
+		return r
+	}
+	if s == ShowingResult && a == Quit {
+		r.State = WaitingOpponent //reset result
+		return r
+	}
+	if s == ShowingResult && a == Rejoin {
+		r.State = Rematch //player rejoin 1
+		return r
+	}
+	if s == Rematch && a == Rejoin { //player join udah 2
+		r.State = Ready
+		return r
+	}
+	if s == Rematch && a == Quit {
+		r.State = WaitingOpponent //reset result
+		return r
+	}
+	return r
+}
+
+type RoomResult struct {
+	ID *string
 }
 
 type Room struct {
-	ID      string
-	Name    string
-	Players []Player
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	Players     []Player     `json:"players"`
+	State       RoomState    `json:"state"`
+	Results     []RoomResult `json:"results"`
+	WaitingSuit *Player      `json:"waitingSuit"`
+}
+
+type Message struct {
+	Player Player `json:"player"`
+	Room   Room   `json:"room"`
 }
 
 var (
@@ -27,6 +270,13 @@ var (
 )
 
 func main() {
+	//TODO:
+	//http.HandleFunc("/rooms/list/", getrooms) //display rooms on lobby
+	//http.HandleFunc("/rooms/join/{roomID}", joinroom) //join room by link from lobby
+	//http.HandleFunc("/rooms/create/", createroom) //idleroom with no initiate player
+	//while runningtime < 4 minute of idle state == idle -> dihitung berapa menit idle
+
+	http.HandleFunc("/rooms/rematch/", rematch) //rooms/rematch/roomid/playerid
 	http.HandleFunc("/rooms/play/", suit)
 	http.HandleFunc("/rooms/", events)
 
@@ -45,34 +295,61 @@ func events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	roomID := pathParts[0]
+
 	mu.Lock()
-
-	var currentPlayer *Player
+	var currentPlayer Player
+	// when currentRoom is not exist, so make the room and first player
 	if _, exist := roomx[roomID]; !exist {
-		player := Player{ID: 0, Suit: []int{}}
-		currentPlayer = &player
-		var room = Room{ID: roomID, Players: []Player{player}}
 
+		var room = Room{
+			ID:      roomID,
+			Players: []Player{},
+			State:   Idle,
+			Results: []RoomResult{},
+		}
+
+		currentPlayer = room.AddPlayer()
 		roomx[roomID] = &room
-		fmt.Printf("Player 1 connected")
+		fmt.Printf("\nNew Player 1 connected with ID: %s", currentPlayer.ID)
+		mu.Unlock()
+
 	} else {
 		currentRoom := roomx[roomID]
-		if len(currentRoom.Players) == 2 {
+		if currentRoom.State == Ready || currentRoom.State == WaitingSuit || currentRoom.State == ShowingResult {
+			fmt.Printf("\nToo many clients connected: %s", currentPlayer.ID)
+			mu.Unlock()
 			http.Error(w, "Too many clients connected", http.StatusTooManyRequests)
 			return
-		} else if len(currentRoom.Players) == 1 {
-			player := Player{ID: 1, Suit: []int{}}
-			currentPlayer = &player
-			roomx[roomID].Players = append(roomx[roomID].Players, player)
-			fmt.Printf("Player 2 connected")
+		}
+
+		if currentRoom.State == WaitingOpponent {
+			currentPlayer = roomx[roomID].AddPlayer()
+			fmt.Printf("\nNew Player 2 connected with ID: %s", currentPlayer.ID)
+			mu.Unlock()
+		}
+
+		if currentRoom.State == Idle {
+			currentPlayer = roomx[roomID].AddPlayer()
+			fmt.Printf("\nNew Player 1 connected with ID: %s", currentPlayer.ID)
+			mu.Unlock()
 		}
 	}
 
 	room := roomx[roomID]
 
-	fmt.Printf("isi player %v", room.Players)
-	fmt.Printf("player %v", currentPlayer)
-	mu.Unlock()
+	notify := r.Context().Done()
+	go func(roomID string, playerID string) {
+		<-notify
+		mu.Lock()
+		fmt.Printf("\nCurrent Room %v", roomx[roomID])
+
+		roomx[roomID].QuitPlayerByID(playerID)
+
+		fmt.Printf("\nCurrent Room After Deleted %s : %v", playerID, roomx[roomID])
+
+		fmt.Printf("\nClient disconnected. \nTotal clients: %d\n", len(roomx[roomID].Players))
+		mu.Unlock()
+	}(room.ID, currentPlayer.ID)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -82,49 +359,20 @@ func events(w http.ResponseWriter, r *http.Request) {
 	messages := make(chan string)
 
 	// Goroutine to send messages.
-	go func(room *Room, player *Player) {
-		fmt.Printf("nganu %d", player.ID)
+	go func(roomID string, player Player) {
 		for {
-			// Send a message every second.
 			time.Sleep(1 * time.Second)
-			messages <- fmt.Sprintf("data: Player %d, Room %s, The time is %s\n\n", player.ID, roomID, time.Now().String())
 
-			// if len(room.Choices) > 0 {
-			// 	lastChoice := room.Choices[len(room.Choices)-1]
-			// 	if *lastChoice.SuitA > 0 {
-			// 		playerA := room.PlayerA
-			// 		messages <- fmt.Sprintf("data: Player %d, Suit %d, Room %s, The time is %s\n\n", playerA, *lastChoice.SuitA, roomID, time.Now().String())
-			// 	}
-			// 	if *lastChoice.SuitB > 0 {
-			// 		playerB := room.PlayerB
-			// 		messages <- fmt.Sprintf("data: Player %d, Suit %d, Room %s, The time is %s\n\n", playerB, *lastChoice.SuitA, roomID, time.Now().String())
-			// 	}
-			// }
-
+			if currentPlayer := roomx[roomID].GetPlayerByID(player.ID); currentPlayer != nil {
+				if jsonRoom, err := json.Marshal(Message{Room: *roomx[roomID], Player: *currentPlayer}); err == nil {
+					messages <- fmt.Sprintf("data: %s\n\n", string(jsonRoom))
+				} else {
+					log.Println("Cannot Unmarshal Line:272")
+				}
+			}
 		}
-	}(room, currentPlayer)
+	}(room.ID, currentPlayer)
 
-	notify := r.Context().Done()
-	go func(room *Room, player *Player) {
-		fmt.Printf("nganu %d", player.ID)
-		<-notify
-		mu.Lock()
-		// filteredItems, err := Filter(roomx[room.ID].Players, func(item Player) bool {
-		// 	return item.ID != player.ID
-		// })
-		// if err{
-		// 	fmt.Printf("Error in disconnected player.")
-		// 	return
-		// }
-
-		roomx[room.ID].Players = slices.DeleteFunc(roomx[roomID].Players, func(n Player) bool {
-			return n.ID != player.ID
-		})
-		fmt.Printf("Client disconnected. Total clients: %d\n", len(roomx[room.ID].Players))
-		mu.Unlock()
-	}(room, currentPlayer)
-
-	fmt.Printf("140?")
 	// Write messages to the response.
 	for msg := range messages {
 		fmt.Fprintf(w, msg)
@@ -140,40 +388,72 @@ func events(w http.ResponseWriter, r *http.Request) {
 
 func suit(w http.ResponseWriter, r *http.Request) {
 
-	pathParts := strings.Split(r.URL.Path[len("/rooms/a/"):], "/")
+	pathParts := strings.Split(r.URL.Path[len("/rooms/play/"):], "/")
+
 	if len(pathParts) != 3 {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
 	roomID := pathParts[0]
-	var player int
-	if _, err := fmt.Sscan(pathParts[1], &player); err != nil {
+	if len(roomx[roomID].Players) != 2 {
+		http.Error(w, "Must be 2 player in the room", http.StatusBadRequest)
+		return
+	}
+
+	var playerID string
+	if _, err := fmt.Sscan(pathParts[1], &playerID); err != nil {
 		http.Error(w, "Invalid player", http.StatusBadRequest)
 		return
 	}
-	//player := pathParts[1].
+
+	if !slices.ContainsFunc(roomx[roomID].Players, func(p Player) bool {
+		return p.ID == playerID
+	}) {
+		http.Error(w, "This player is not allowed to submit the suit in this Room.", http.StatusBadRequest)
+		return
+	}
+
 	var suit int
 	if _, err := fmt.Sscan(pathParts[2], &suit); err != nil {
 		http.Error(w, "Invalid choice", http.StatusBadRequest)
 		return
 	}
 
-	mu.Lock()
 	if _, exist := roomx[roomID]; !exist {
 		http.Error(w, "Invalid room", http.StatusBadRequest)
 	}
+
 	if suit > 0 && suit < 4 {
-		// if roomx[roomID].PlayerA.Player == player {
-		// 	roomx[roomID].Choices[len(roomx[roomID].Choices)-1].SuitA = &suit
-		// 	fmt.Fprintf(w, "Player A received for room %d\n", suit)
-		// }
-		// if rooms[roomID].PlayerB.Player == player {
-		// 	rooms[roomID].Choices[len(rooms[roomID].Choices)-1].SuitB = &suit
-		// 	fmt.Fprintf(w, "Player B received for room %d\n", suit)
-		// }
+		mu.Lock()
+
+		roomx[roomID].AddPlayerSuitByID(playerID, Suit(suit))
+		mu.Unlock()
 	} else {
 		http.Error(w, "Invalid choice", http.StatusBadRequest)
 	}
 
-	mu.Unlock()
+}
+
+func rematch(w http.ResponseWriter, r *http.Request) {
+
+	pathParts := strings.Split(r.URL.Path[len("/rooms/rematch/"):], "/")
+
+	if len(pathParts) != 2 {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	roomID := pathParts[0]
+
+	var playerID string
+	if _, err := fmt.Sscan(pathParts[1], &playerID); err != nil {
+		http.Error(w, "Invalid player", http.StatusBadRequest)
+		return
+	}
+
+	if _, exist := roomx[roomID]; !exist {
+		http.Error(w, "Invalid room", http.StatusBadRequest)
+	}
+	mu.Lock() //semua request mutasinya ditahan
+	roomx[roomID].RejoinPlayerByID(playerID)
+	mu.Unlock() //release mutasi
 }
