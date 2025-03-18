@@ -9,7 +9,6 @@ Proyek ini adalah permainan **Batu Gunting Kertas** berbasis web yang memungkink
 1. **Clone repository**
    ```sh
    git clone https://github.com/divetri/RockPaperScissor.git
-   cd repository
    ```
 2. **Jalankan server**
    ```sh
